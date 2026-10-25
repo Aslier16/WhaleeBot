@@ -1,0 +1,6 @@
+﻿{
+  "server": {
+    "address": "Your napcat bot ws address",
+    "token": "Your napcat bot token"
+  }
+}
