@@ -8,7 +8,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Aslier.DeepseekWebChatWrapper" Version="0.0.1" />
+        <PackageReference Include="Aslier.DeepseekWebChatWrapper" Version="0.0.2" />
         <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.6"/>
         <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.14" />
         <PackageReference Include="System.Net.Http" Version="4.3.4" />

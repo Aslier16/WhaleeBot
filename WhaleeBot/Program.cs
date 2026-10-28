@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
+using DeepseekWebChatWrapper.Core;
 using WhaleeBot;
 using WhaleeBot.Commands;
 using WhaleeBot.Models;
@@ -28,11 +29,14 @@ builder.Services.AddHttpClient<OpenAIClient>(client =>
     client.BaseAddress = new Uri(appconfig.CompletionProvider.BaseUrl);
     client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", appconfig.CompletionProvider.ApiKey);
 });
+builder.Services.AddSingleton<DsWebChatClient>(new DsWebChatClient(appconfig.CompletionProvider.AuthToken, appconfig.CompletionProvider.DsSessionId));
 
 builder.Services.AddSingleton<IMessageCommand, OpCommand>();
 builder.Services.AddSingleton<ICommandRouter, CommandRouter>();
 
+// Register response handlers
 builder.Services.AddSingleton<IResponseHandler, SendPrivateMessageHandler>();
+builder.Services.AddSingleton<IResponseHandler, SendGroupMessageHandler>();
 
 builder.Services.AddSingleton<IChatRouter, ChatRouter>();
 builder.Services.AddSingleton<IMessageRouter, MessageRouter>();

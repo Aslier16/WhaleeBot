@@ -11,6 +11,9 @@
   },
   "admins": [123456789],
   "completionProvider": {
+    "enableDeepseekWebChat": false,
+    "authToken": "Bearer xxx",
+    "dsSessionId": "xxx",
     "baseUrl": "base url of your ai provider",
     "completionPath": "/chat/completions",
     "model": "model-name",
