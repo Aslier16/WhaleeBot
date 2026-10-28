@@ -1,0 +1,20 @@
+﻿{
+  "server": {
+    "wsAddress": "Your napcat bot ws address",
+    "httpAddress": "Your napcat bot http address",
+    "token": "Your napcat bot token"
+  },
+  "chatFilter": {
+    "blacklistMode": false,
+    "whitelist": [],
+    "blacklist": []
+  },
+  "admins": [123456789],
+  "completionProvider": {
+    "baseUrl": "base url of your ai provider",
+    "completionPath": "/chat/completions",
+    "model": "model-name",
+    "apiKey": "sk-xxxxxxxxxxxxxxxx"
+  },
+  "promptTemplate": "write your prompt to ai here"
+}
