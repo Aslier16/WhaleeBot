@@ -19,5 +19,9 @@
     "model": "model-name",
     "apiKey": "sk-xxxxxxxxxxxxxxxx"
   },
-  "promptTemplate": "write your prompt to ai here"
+  "promptTemplate": "write your prompt to ai here",
+  "chatConfig": {
+    "messageBatchDelaySeconds": 5,
+    "messageBatchSize": 5
+  }
 }

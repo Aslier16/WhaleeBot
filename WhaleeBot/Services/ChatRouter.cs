@@ -14,7 +14,7 @@ namespace WhaleeBot.Services;
 /// </summary>
 public class ChatRouter : IChatRouter
 {
-    private JsonSerializerOptions _serializerOptions = new()
+    private readonly JsonSerializerOptions _serializerOptions = new()
     {
         AllowOutOfOrderMetadataProperties = true,
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -26,6 +26,58 @@ public class ChatRouter : IChatRouter
     private readonly NapcatClient _napcatClient;
     private readonly OpenAIClient _openAiClient;
     private readonly DsWebChatClient _dsWebChatClient;
+
+    protected long LastSendTime { get; set; } = -1;
+    protected long LastReceiveTime { get; set; } = -1;
+    protected Dictionary<long, List<ParsedMessage>> MessageHistory { get; set; } = new();
+    protected Queue<ParsedMessage> MessageBatchQueue { get; set; } = new();
+    protected string PromptTemplate { get; set; }
+
+    protected string FrontFormatPrompt { get; set; } = """
+                                                       You must only output the result in a list of JSON objects, strictly guarantee response start with '[' and end with ']' and don't place it in markdown code block or the parse will fail, each object will behave sequentially, empty list means do nothing. You are in a chat app has text wrap no md format support, so don't output too long line or with md syntax.
+                                                       """;
+
+    protected const string OutputContractPrompt = """
+                                                  OUTPUT CONTRACT
+                                                  - Your entire reply is ONE JSON array. First character '[', last character ']'. Nothing before, nothing after — no greeting, no explanation, no markdown fences.
+                                                  - Each array element is ONE action(send message or sth. else), top to bottom. Empty array [] means stay silent.
+                                                  - Use group or user id that exists in the chat, don't make up random numbers.
+
+                                                  JSON LEGALITY — hard rules, any violation = failure
+                                                  1. Double quotes only. Escape inner quotes as \". No single quotes, no unquoted keys.
+                                                  2. NO literal newline, carriage return, or tab inside any string. Use \n only if truly needed — but see CHAT RULES: you almost never need it.
+                                                  3. No trailing commas, no comments, no NaN/Infinity, no leading zeros, no + sign.
+                                                  4. No markdown inside message: no **bold**, no _italic_, no backticks, no ``` fences, no # headings, no bullet lists, no numbered lists, no tables, no links with md syntax. The app renders plain text only.
+                                                  5. You may put \n inside a message to manually break lines the way a human does when a bubble runs long or wants visual blocks newlines between elements are fine right after the comma never inside an object never after [ never before ]
+                                                  7. If you have nothing to say, output exactly: []
+
+                                                  CHAT RULES — sound like a human, not a document
+                                                  1. Split your reply into multiple message objects. Default 1-3 bubbles; more only if the thought really needs it. Never dump one giant paragraph.
+                                                  2. Keep each bubble short — aim under ~60 characters, hard ceiling ~120. One idea per bubble.
+                                                  3. Want separate sends use a new object, want a visual break inside one bubble use \n
+                                                  4. Write like texting: contractions, casual wording, sentence fragments, the occasional emoji, no formal transitions like "Furthermore" or "In conclusion".
+                                                  5. No lists, no headings, no step-by-step enumeration. If you must convey several points, spread them across bubbles.
+                                                  6. Don't over-explain, don't lecture, don't repeat the question back. Reply, then stop.
+                                                  7. Match the user's language and tone.
+
+                                                  VALID EXAMPLE
+                                                  [{"$type":"send_group_msg","group_id":12345678,"message":"some message"},{"$type":"send_group_msg","group_id":12345678,"message":"second message"},{"$type":"send_group_msg","group_id":12345678,"message":"ending message"}]
+
+                                                  VALID EXAMPLE — multi-line layout, still one object per line
+                                                  [{"$type":"send_private_msg","user_id":654321,"message":"some message"},
+                                                  {"$type":"send_private_msg","user_id":654321,"message":"another message"}]
+
+                                                  INVALID — NEVER DO THIS
+                                                  ```json
+                                                  [{"type(should be $type)":"xxx(should be valid type)","user_id":7777, "message": "第一行
+                                                  第二行"}, {"type":"send_private_msg(should be send_group_msg)","group_id":8888,"content (should be message)":"**加粗** 和 - 列表项"},]
+                                                  """;
+    /// <summary>
+    /// Contains the description and format of all response handlers then output contract, used to instruct the LLM on how to respond.
+    /// </summary>
+    protected string EndingFormatPrompt;
+
+    protected Dictionary<Type, IResponseHandler> ResponseHandlersDict { get; set; }
 
     /// <summary>
     /// general router for messages
@@ -53,66 +105,9 @@ public class ChatRouter : IChatRouter
         _openAiClient = openAiClient;
         _dsWebChatClient = dsWebChatClient;
         PromptTemplate = appConfig.PromptTemplate;
-        var promptBuiler = new StringBuilder();
         ResponseHandlersDict = new Dictionary<Type, IResponseHandler>();
-        foreach (var responseHandler in responseHandlers)
-        {
-            promptBuiler.Append(responseHandler.Description);
-            promptBuiler.Append(responseHandler.Format);
-            ResponseHandlersDict[responseHandler.HandledRequestType] = responseHandler;
-        }
-
-        RequestFormatPrompt = promptBuiler.ToString();
+        ConcatFormatPrompt();
     }
-
-    protected long LastSendTime { get; set; } = -1;
-    protected long LastReceiveTime { get; set; } = -1;
-    protected Dictionary<long, List<ParsedMessage>> MessageHistory { get; set; } = new();
-    protected string PromptTemplate { get; set; }
-
-    protected string FrontFormatPrompt { get; set; } = """
-                                                        You must only output the result in a list of JSON objects, strictly guarantee response start with '[' and end with ']' and don't place it in markdown code block or the parse will fail, each object will behave sequentially, empty list means do nothing. You are in a chat app has text wrap no md format support, so don't output too long line or with md syntax.
-                                                        """;
-
-    protected const string EndingFormatPrompt = """
-                                                OUTPUT CONTRACT
-                                                - Your entire reply is ONE JSON array. First character '[', last character ']'. Nothing before, nothing after — no greeting, no explanation, no markdown fences.
-                                                - Each array element is ONE action(send message or sth. else), top to bottom. Empty array [] means stay silent.
-                                                - Use group or user id that exists in the chat, don't make up random numbers.
-                                                
-                                                JSON LEGALITY — hard rules, any violation = failure
-                                                1. Double quotes only. Escape inner quotes as \". No single quotes, no unquoted keys.
-                                                2. NO literal newline, carriage return, or tab inside any string. Use \n only if truly needed — but see CHAT RULES: you almost never need it.
-                                                3. No trailing commas, no comments, no NaN/Infinity, no leading zeros, no + sign.
-                                                4. No markdown inside message: no **bold**, no _italic_, no backticks, no ``` fences, no # headings, no bullet lists, no numbered lists, no tables, no links with md syntax. The app renders plain text only.
-                                                5. You may put \n inside a message to manually break lines the way a human does when a bubble runs long or wants visual blocks newlines between elements are fine right after the comma never inside an object never after [ never before ]
-                                                7. If you have nothing to say, output exactly: []
-
-                                                CHAT RULES — sound like a human, not a document
-                                                1. Split your reply into multiple message objects. Default 1-3 bubbles; more only if the thought really needs it. Never dump one giant paragraph.
-                                                2. Keep each bubble short — aim under ~60 characters, hard ceiling ~120. One idea per bubble.
-                                                3. Want separate sends use a new object, want a visual break inside one bubble use \n
-                                                4. Write like texting: contractions, casual wording, sentence fragments, the occasional emoji, no formal transitions like "Furthermore" or "In conclusion".
-                                                5. No lists, no headings, no step-by-step enumeration. If you must convey several points, spread them across bubbles.
-                                                6. Don't over-explain, don't lecture, don't repeat the question back. Reply, then stop.
-                                                7. Match the user's language and tone.
-
-                                                VALID EXAMPLE
-                                                [{"$type":"send_group_msg","group_id":12345678,"message":"some message"},{"$type":"send_group_msg","group_id":12345678,"message":"second message"},{"$type":"send_group_msg","group_id":12345678,"message":"ending message"}]
-
-                                                VALID EXAMPLE — multi-line layout, still one object per line
-                                                [{"$type":"send_private_msg","user_id":654321,"message":"some message"},
-                                                {"$type":"send_private_msg","user_id":654321,"message":"another message"}]
-
-                                                INVALID — NEVER DO THIS
-                                                ```json
-                                                [{"type(should be $type)":"xxx(should be valid type)","user_id":7777, "message": "第一行
-                                                第二行"}, {"type":"send_private_msg(should be send_group_msg)","group_id":8888,"content (should be message)":"**加粗** 和 - 列表项"},]
-                                                """;
-    
-    protected string RequestFormatPrompt { get; set; }
-
-    protected Dictionary<Type, IResponseHandler> ResponseHandlersDict { get; set; }
 
     public async Task RouteMessageAsync(MessageEvent messageEvent)
     {
@@ -203,7 +198,7 @@ public class ChatRouter : IChatRouter
         {
             Role = "system",
             Content =
-                $"{FrontFormatPrompt}\nYou are chatting" +
+                $"{FrontFormatPrompt}\nYou are chatting " +
                 (messageEvent.GroupId is not null
                     ? $"in Group {messageEvent.GroupName}({messageEvent.GroupId})."
                     : $"You are chatting with user {messageEvent.Sender.Nickname}({messageEvent.UserId}).")
@@ -217,10 +212,11 @@ public class ChatRouter : IChatRouter
                 Content = $"{parsedMessage.SenderNickname}({parsedMessage.SenderId}):{parsedMessage.Text}"
             });
         }
+
         var endingPrompt = new OpenAIMessage()
         {
             Role = "system",
-            Content = $"You can construct following objects:{RequestFormatPrompt}\n{EndingFormatPrompt}"
+            Content = $"You can construct following objects:{EndingFormatPrompt}"
         };
         prompt.Add(endingPrompt);
 
@@ -336,20 +332,32 @@ public class ChatRouter : IChatRouter
         }
     }
 
-    public async Task PostNapcatRequestAsync(string address, object body)
+    public async Task<HttpResponseMessage> PostNapcatRequestAsync(string address, object body)
     {
         var response = await _napcatClient.PostJsonAsync(address, body);
-        try
+
+        return response;
+    }
+
+    public void AddMessageHistory(long id, ParsedMessage message)
+    {
+        if (!MessageHistory.TryGetValue(id, out var history))
         {
-            response.EnsureSuccessStatusCode();
-            _logger.LogInformation(
-                "Successfully posted napcat request to {address} with body {body}. Response: {response}",
-                address, body, await response.Content.ReadAsStringAsync());
+            history = [];
         }
-        catch (Exception ex)
+
+        history.Add(message);
+    }
+
+    public void ConcatFormatPrompt()
+    {
+        var promptBuilder = new StringBuilder();
+        foreach (var responseHandler in ResponseHandlersDict.Values)
         {
-            _logger.LogError(ex, "Failed to post napcat request to {address} with body {body}. Response: {response}",
-                address, body, await response.Content.ReadAsStringAsync());
+            promptBuilder.Append(responseHandler.Description);
+            promptBuilder.Append(responseHandler.Format);
         }
+
+        EndingFormatPrompt = $"{promptBuilder}/n{OutputContractPrompt}";
     }
 }

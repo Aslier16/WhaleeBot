@@ -23,7 +23,7 @@ public class MessageRouter(ILogger<MessageRouter> logger, ICommandRouter command
         await messageStream.CopyToAsync(jsonCache);
         var json = Encoding.UTF8.GetString(jsonCache.ToArray());
         var oneBotEvent = JsonSerializer.Deserialize<OneBotEvent>(json, _serializerOptions);
-        logger.LogDebug("Raw event json: {event}", json);
+        // logger.LogDebug("Raw event json: {event}", json);
 #else
         var oneBotEvent = await JsonSerializer.DeserializeAsync<OneBotEvent>(messageStream, _serializerOptions);
 #endif
@@ -38,12 +38,12 @@ public class MessageRouter(ILogger<MessageRouter> logger, ICommandRouter command
 
     private async Task HandleMessageEventAsync(MessageEvent messageEvent)
     {
-        logger.LogInformation("Handling MessageEvent: {message}", messageEvent.Message);
+        // logger.LogInformation("Handling MessageEvent: {message}", messageEvent.Message);
         await chatRouter.RouteMessageAsync(messageEvent);
     }
 
     private async Task HandleMetaEventAsync(MetaEvent metaEvent)
     {
-        logger.LogInformation("Received meta event: {meta}", metaEvent.Time);
+        // logger.LogInformation("Received meta event: {meta}", metaEvent.Time);
     }
 }

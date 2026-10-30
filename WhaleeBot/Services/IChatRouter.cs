@@ -1,4 +1,5 @@
-﻿using WhaleeBot.Models.OneBot;
+﻿using WhaleeBot.Models;
+using WhaleeBot.Models.OneBot;
 
 namespace WhaleeBot.Services;
 
@@ -8,5 +9,6 @@ namespace WhaleeBot.Services;
 public interface IChatRouter
 {
     Task RouteMessageAsync(MessageEvent messageEvent);
-    Task PostNapcatRequestAsync(string address, object body);
+    Task<HttpResponseMessage> PostNapcatRequestAsync(string address, object body);
+    void AddMessageHistory(long id, ParsedMessage message);
 }

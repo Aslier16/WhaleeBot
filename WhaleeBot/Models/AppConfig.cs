@@ -7,4 +7,5 @@ public class AppConfig
     public required List<long> Admins { get; set; }
     public required CompletionProvider CompletionProvider { get; set; }
     public required string PromptTemplate { get; set; }
+    public required ChatConfig ChatConfig { get; set; }
 }
