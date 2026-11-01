@@ -29,8 +29,12 @@ public class ChatRouter : IChatRouter
 
     protected long LastSendTime { get; set; } = -1;
     protected long LastReceiveTime { get; set; } = -1;
+
     protected Dictionary<long, List<ParsedMessage>> MessageHistory { get; set; } = new();
-    protected Queue<ParsedMessage> MessageBatchQueue { get; set; } = new();
+
+    // protected Queue<ParsedMessage> MessageBatchQueue { get; set; } = new();
+    private TimeSpan BatchInterval { get; set; }
+    private Dictionary<long, bool> BatchStates { get; set; } = new();
     protected string PromptTemplate { get; set; }
 
     protected string FrontFormatPrompt { get; set; } = """
@@ -72,6 +76,7 @@ public class ChatRouter : IChatRouter
                                                   [{"type(should be $type)":"xxx(should be valid type)","user_id":7777, "message": "第一行
                                                   第二行"}, {"type":"send_private_msg(should be send_group_msg)","group_id":8888,"content (should be message)":"**加粗** 和 - 列表项"},]
                                                   """;
+
     /// <summary>
     /// Contains the description and format of all response handlers then output contract, used to instruct the LLM on how to respond.
     /// </summary>
@@ -106,6 +111,12 @@ public class ChatRouter : IChatRouter
         _dsWebChatClient = dsWebChatClient;
         PromptTemplate = appConfig.PromptTemplate;
         ResponseHandlersDict = new Dictionary<Type, IResponseHandler>();
+        foreach (var handler in responseHandlers)
+        {
+            ResponseHandlersDict[handler.HandledRequestType] = handler;
+        }
+
+        BatchInterval = TimeSpan.FromSeconds(appConfig.ChatConfig.MessageBatchDelaySeconds);
         ConcatFormatPrompt();
     }
 
@@ -194,6 +205,37 @@ public class ChatRouter : IChatRouter
 
         MessageHistory[chatId].Add(parsed);
 
+        // await SendCompletionRequest(messageEvent, chatId);
+        _logger.LogDebug("Queue message for batch processing. ChatId: {chatId}, Message: {message}", chatId,
+            parsed.Text);
+        _ = NotifyBatchStartAsync(messageEvent, chatId);
+    }
+
+    private async Task NotifyBatchStartAsync(MessageEvent messageEvent, long chatId)
+    {
+        if (BatchStates.TryGetValue(chatId, out var isBatching) && isBatching)
+        {
+            return;
+        }
+
+        BatchStates[chatId] = true;
+        await Task.Delay(BatchInterval);
+        try
+        {
+            await SendCompletionRequest(messageEvent, chatId);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Error occurred while sending completion request for chat {chatId}", chatId);
+        }
+        finally
+        {
+            BatchStates[chatId] = false;
+        }
+    }
+
+    private async Task SendCompletionRequest(MessageEvent messageEvent, long chatId)
+    {
         var sysPrompt = new OpenAIMessage()
         {
             Role = "system",
@@ -290,46 +332,44 @@ public class ChatRouter : IChatRouter
         }
 
         await ParseResponseAndExec(responseContent);
+    }
 
-        async Task<bool> ParseResponseAndExec(string completionResponse)
+    async Task<bool> ParseResponseAndExec(string completionResponse)
+    {
+        try
         {
-            try
+            var components =
+                JsonSerializer.Deserialize<List<NapcatRequestBase>>(completionResponse,
+                    _serializerOptions);
+            // _logger.LogInformation("Received OpenAI response for chat {response}",
+            //     completionResponse);
+            if (components is null)
             {
-                var components =
-                    JsonSerializer.Deserialize<List<NapcatRequestBase>>(completionResponse,
-                        _serializerOptions);
-                _logger.LogInformation("Received OpenAI response for chat {chatId}: {response}", chatId,
+                _logger.LogError("Failed to deserialize OpenAI response for reply:\n{response}",
                     completionResponse);
-                if (components is null)
-                {
-                    _logger.LogError("Failed to deserialize OpenAI response for chat {chatId}. Raw Reply:\n{response}",
-                        chatId,
-                        completionResponse);
-                    return true;
-                }
-
-                foreach (var component in components)
-                {
-                    if (ResponseHandlersDict.TryGetValue(component.GetType(), out var handler))
-                    {
-                        await handler.ProcessAsync(this, component, CancellationToken.None);
-                    }
-                    else
-                    {
-                        _logger.LogWarning("No response handler found for request type {requestType}. Skipped",
-                            component.GetType());
-                    }
-                }
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e, "Failed to deserialize OpenAI response for chat {chatId}. Response: {response}",
-                    chatId,
-                    completionResponse);
+                return true;
             }
 
-            return false;
+            foreach (var component in components)
+            {
+                if (ResponseHandlersDict.TryGetValue(component.GetType(), out var handler))
+                {
+                    await handler.ProcessAsync(this, component, CancellationToken.None);
+                }
+                else
+                {
+                    _logger.LogWarning("No response handler found for request type {requestType}. Skipped",
+                        component.GetType());
+                }
+            }
         }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Failed to deserialize OpenAI response for response: {response}",
+                completionResponse);
+        }
+
+        return false;
     }
 
     public async Task<HttpResponseMessage> PostNapcatRequestAsync(string address, object body)
